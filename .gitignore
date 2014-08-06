@@ -1,0 +1,4 @@
+*.pyc
+/cache
+/output
+srv.pid

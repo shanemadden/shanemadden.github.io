@@ -1,2 +1,8 @@
 SE puppet cleanup
 vagrant windows guest build
+redis multinode module
+serf module
+serf dynamic dns setup
+
+settings - both base and for theme
+set up hosting - push to master (and change it to default) add CNAME file

@@ -6,7 +6,7 @@ Tags: puppet, stackexchange
 Slug: stackexchange-puppet-cleanup
 Summary: Stack Exchange's Puppet environment - what we do with it and how we're improving it.
 
-One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. Generally, people think of Stack Exchange as a Windows shop, and that's partly true since that's still the core of the platform, but Linux is also critical to the service we provide.  For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  Beyond that, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.
+One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. People think of Stack Exchange as a Windows shop, and that's partly true since Windows is still the core of the platform, but Linux is also critical to the service we provide. For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  Beyond that, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.
 
 Stack Exchange has been using Puppet to manage all those Linux nodes for years, and the infrastructure was showing its age a bit.
 
@@ -59,5 +59,7 @@ Having Puppet Masters Build Your Puppet Masters
  - SRV records
  - puppet client management - config 
  - teamcity builds on branches - pull script
+ - merge requests
+ - lessons learned
 
  future - autosigning

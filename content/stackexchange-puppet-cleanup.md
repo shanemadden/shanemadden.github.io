@@ -7,7 +7,7 @@ Slug: stackexchange-puppet-cleanup
 
 One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. People think of Stack Exchange as a Windows shop, and that's partly true since Windows is still the core of the platform, but Linux is also critical to the service we provide. For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  Beyond that, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.
 
-Stack Exchange has been using Puppet to manage all those Linux nodes for years, and the infrastructure was showing its age a bit.
+Stack Exchange has been using Puppet to manage all those Linux nodes for years, and the infrastructure and configuration logic was showing its age a bit.
 
  - Hiera was in use, but only for some of the class parameters and explicit lookups from some modules; node definitions were still just in a `site.pp` manifest.
  - The Puppet masters themselves were artisanally hand-crafted - the process of building a new master wasn't in Puppet.
@@ -15,7 +15,7 @@ Stack Exchange has been using Puppet to manage all those Linux nodes for years, 
 
 For these, the plan, respectively:
 
- - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.
+ - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.  Also get all the sensitive data bits into files managed by [BlackBox](https://github.com/StackExchange/blackbox), so that we're not walking around with passwords in every laptop that clones the git repo.
  - Make a module that builds the puppet masters reproducibly.
  - Use the [inifile module](https://forge.puppetlabs.com/puppetlabs/inifile) for management of everything's `puppet.conf`
 
@@ -23,9 +23,9 @@ In addition to this cleanup, we wanted to get ahead of the game in a few other a
 
  - [Configuration-file environments are deprecated](https://docs.puppetlabs.com/puppet/latest/reference/environments_classic.html#config-file-environments-are-deprecated); this makes for a good time to do something useful with directory environments - have git branches be set up as puppet environments.
  - Puppet Dashboard is not getting much love these days (since it was forked for the enterprise dashboard then handed to the community to maintain the open source version) - using [PuppetDB](https://docs.puppetlabs.com/puppetdb/latest/) for storage of that info with a frontend like [PuppetBoard](https://github.com/nedap/puppetboard) seems like the right direction to be going in.
- - [Trusted node data](https://docs.puppetlabs.com/puppet/3/reference/release_notes.html#new-trusted-hash-with-trusted-node-data) is.. better to use than just trusting the identity of a node as it reports it.
+ - [Trusted node data](https://docs.puppetlabs.com/puppet/3/reference/release_notes.html#new-trusted-hash-with-trusted-node-data) is.. better to use than just trusting the identity of a node as it reports it; using the `clientcert` fact to determine a node's catalog via Hiera gives authenticated nodes the ability to masquerade as other nodes, which can be a security problem in some environments (like ours).
  - The [`$facts` hash](https://docs.puppetlabs.com/puppet/3.5/reference/release_notes.html#global-facts-hash) is the new way to get at your facts in manifests; cleaner code and no scope problems.
- - The future parser isn't quite ready for use in production, but we want to start making sure our modules are compatible.
+ - The future parser isn't quite ready for use in production, but it's close; we want to start making sure our modules are compatible.
  - [SRV records](https://docs.puppetlabs.com/guides/scaling_multiple_masters.html#option-4-dns-srv-records) are still labeled as experimental, but I've been using them in production since 3.1 and their utility far outweighs the few rough edges (automatic load balancing, and failover with priority order, for your clients to connect to your masters!)
 
 Getting From Here to There
@@ -40,7 +40,7 @@ Starting this process, there were 2 masters - one in New York, and one in our DR
 In order to make all these changes in a non-disruptive way, we decided to build new master nodes in each location, get everything to where we wanted it, then migrate nodes over.
 
  - A new Git branch, `new_puppetmasters`, would be where all the changes would occur - and make TeamCity trigger deployments on changes to either branch.
- - New masters would be built - using the new module to build them, tied in to the same CA infrastructure but reporting to themselves
+ - New masters would be built - using the new module to build them, tied in to the existing Puppet CA infrastructure but reporting to themselves
  - Temporarily, the `production` environment on the new masters would point to the `new_puppetmasters` branch (so that nodes reporting to them would get the new stuff) - after migration, this would change back to `master`
  - Nodes could then be migrated over to the new masters with a `puppet agent --test --server new_master --noop` to make sure the new environment wasn't going to blow up their applications, then dropping the `--noop` to actually move them (the new environment would have the changes to the management of `puppet.conf`, so they would stick to it once run against it once)
 
@@ -49,7 +49,7 @@ Having Puppet Masters Build Your Puppet Masters
 
 *yo dawg?*
 
-The configuration of Puppet itself now happens with two modules; puppet_client (applied globally to all systems) and puppet_master (applied to the masters).  Previously, there was a class in a "shared local stuff" module, 'site', that was dropping a static `puppet.conf`, which would vary based on a couple parameters - location and whether the node was a puppet master or not.
+The configuration of Puppet itself now happens with two modules; puppet_client (applied globally to all systems) and puppet_master (applied to the masters).  Previously, there was a class in a "shared local stuff" module, 'site', that was dropping a static `puppet.conf`, which would be a different static file based on a couple parameters - node location and whether the node was a puppet master or not.
 
 With the new structure, the client module has `inifile` resources for settings in `puppet.conf` that all nodes get (`server` and `environment` set to parameter values from Hiera, and some static stuff like `stringify_facts = false` and `ordering = random`; [manifest ordering](http://puppetlabs.com/blog/introducing-manifest-ordered-resources) is nice, but we'd like to have the dependencies spelled out so something doesn't bite us when we move resources around in a class - and this keeps us honest on those resource relationships), and the master module has resources for settings that only masters care about (`ca` to true or false based on Hiera data, static stuff like `trusted_node_data = true`, and `dns_alt_names` set to a bunch of combinations of hostnames and domains that might be used to hit the master).
 
@@ -94,20 +94,149 @@ Other than those couple bits of special casing, the Vagrant systems are built by
 Speaking of Hiera..
 -------------------
 
-`site.pp`, or more specifically, having more than a couple lines in `site.pp`, is my enemy.  Classic node definitions in manifests required either inheritance, regex node names, or making the same change in multiple places, to manage multiple nodes with effectively the same role.  `hiera_include()`, plus Hiera's automatic data bindings for class parameters, is a much healthier pattern for fetching configuration data - and for the cases where those don't quite cover the needs of a node definition, all that's needed is a little helper manifest.
+`site.pp`, or more specifically, having more than a couple lines in `site.pp`, is my enemy.  Classic node definitions in manifests required either inheritance (now [deprecated](https://docs.puppetlabs.com/puppet/latest/reference/deprecated_language.html#node-inheritance)), regex node names, or making the same change in multiple places, to manage multiple nodes with effectively the same role.  `hiera_include()`, plus Hiera's automatic data bindings for class parameters, is a much healthier pattern for fetching configuration data - and for the cases where those don't quite cover the needs of a node definition, all that's needed is a little helper manifest (say, for taking a passed-in array or hash table and making a bunch of instances of a defined type from it).
 
-(added role tier, show example)
+We looked at, but didn't use, the [roles and profiles pattern](http://garylarizza.com/blog/2014/02/17/puppet-workflow-part-2/) - we're comfortable with just letting Hiera data bindings handle this kind of thing, and lets us define a machine role with pure Hiera, no manifests.
 
+So, what this looks like, is..
 
- X master module
- - branch environments (discuss why no r10k)
- - hiera
- - dashboard to puppetdb/pupeptboard - discuss HA, link to jira epic
- X vagrant
- - SRV records
- X puppet client management - config 
- - teamcity builds on branches - pull script
- - merge requests
- - talk about ordering
+ - In `site.pp`, there's a Hiera lookup for a machine's role before calling `hiera_include()`:
 
- future - autosigning, module_data?
+       $role = hiera('role', undef)
+       hiera_include('classes')
+
+   ..which is its own tier in `hiera.yaml`..
+
+       :hierarchy:
+         - "host/%{::certname_trusted}"
+         - "host/%{::hostname}"
+         - "role/%{::role}"
+
+ - A node sets its role (and in most cases nothing else, unless there's some node-specific config) in its Hiera file:
+
+       {
+         "puppet_master::ca_master": true,
+         "role": "puppet_master"
+       }
+
+   ..and the role file does the rest..
+
+       {
+         "classes": [
+           "puppet_master",
+           "puppetdb::master::config"
+         ],
+         "puppet_master::secret_setup": true
+       }
+
+ - And in cases where it's needed, the role file can call a helper class to do anything that needs to happen in a manifest:
+
+       {
+         "classes": [
+           "role::redis_primary",
+           "redis"
+         ],
+         "redis::user": "redis"
+       }
+
+   ..which is just a simple helper class..
+
+       class role::redis_primary {
+         realize Redis::Instance['core-redis', 'mobile-redis']
+       }
+
+This feels like a decent middle ground for us; covers our use cases without too much additional complexity, and keeps (almost) all the config data in one place.
+
+Branch Environments
+-------------------
+
+Tying VCS branches to Puppet environments is a common thing nowadays with [r10k](https://github.com/adrienthebo/r10k), but briefly for those not familiar..
+
+ - Puppet nodes can have different environments, which ([in recent versions](https://docs.puppetlabs.com/puppet/latest/reference/environments.html#directory-environments-vs-config-file-environments)) mean different directories of manifests, modules, and hiera data on the master.  You can have a node temporarily or permanently report to a specific environment.
+ - Having VCS branches map to these environments means that you can create a branch for any given change, large or small, and a Puppet environment will be created for it.  You can then have a node report to that branch for however long you need - weeks, one run, or even just a `--noop` run, to test the change before it goes live.
+
+So, pretty much: it's incredibly useful.  Easy testing of expected behavior from changes, and we can use GitLab merge requests for getting more eye big changes and have the branch being reviewed be live configuration.
+
+r10k does a great job of managing deploying the branch environments, as well as handling external module dependencies, but we're not using it; doing it right would mean switching each of our internal modules over to its own Git repo, which was just not worth the brain damage that would have incurred.
+
+So instead, we just have a simple script that pulls from the gitlab repo, looks at its branches and deploys them (removing any branches that don't exist any more in git).
+
+    #!/bin/bash -e
+
+    #
+    # teamcity_pull.sh 
+    #
+
+    # For parsing the git branch list..
+    IFS=$'\n'
+
+    # from http://stackoverflow.com/a/8574392
+    containsElement () {
+      local e
+      for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
+      return 1
+    }
+
+    # Fetch new changes into shared repository
+    # (this shared repo should have been cloned with 
+    #  `git clone --mirror git@host:path/to/puppet.git`)
+    cd /etc/puppet/puppet.git/
+    git fetch -p
+
+    # Get list of all branches (these should match remote after the fetch)
+    branches=( $(git for-each-ref --format='%(refname:short)' refs/heads/) )
+
+    cd /etc/puppet/environments/
+
+    # For each branch that exists in the repo, verify that it's cloned (shared with the main repo)
+    for branch in ${branches[@]}; do
+      if [ -d "/etc/puppet/environments/${branch}" ]; then
+        echo "${branch} branch and clone exist; pulling updates from shared repo"
+        cd "/etc/puppet/environments/${branch}"
+        git pull
+        echo "${branch} decrypting blackbox.."
+        BASEDIR="/etc/puppet/environments/${branch}" /usr/blackbox/bin/blackbox_postdeploy puppet
+        cd /etc/puppet/environments/
+      else
+        echo "${branch} clone does not exist but should; cloning from shared repo"
+        git clone --shared -b "${branch}" /etc/puppet/puppet.git "/etc/puppet/environments/${branch}"
+        echo "${branch} decrypting blackbox.."
+        BASEDIR="/etc/puppet/environments/${branch}" /usr/blackbox/bin/blackbox_postdeploy puppet
+      fi
+    done
+
+    # Ignore the 'production' symlink from destruction..
+    branches+=('production')
+
+    # For each directory that exists in /etc/puppet/environments, verify that there's a
+    # branch with that name.  If there is none, the branch is gone - nuke the environment.
+    directories=( $(ls /etc/puppet/environments/) )
+
+    # The containsElement function needs IFS to have spaces.
+    IFS=' '
+    for directory in ${directories[@]}; do
+      if ! containsElement "${directory}" "${branches[@]}"; then
+        echo "${directory} exists as a directory but is not a branch in the repo; rm -rf that sucka"
+        rm -rf "/etc/puppet/environments/${directory}/"
+      fi
+    done
+
+Pulling the Trigger
+-------------------
+
+With that all in place, we could start moving nodes over to the new masters.  Carefully, with `--noop` leading the way, and doing each node or role one-by-one.
+
+Aside from a few permissions changes in `file` resources (ones that were picking up the permissions from the filesystem instead of in the manifest definition), most of the nodes applied their config against the new masters just as expected: with only changes to the `inifile` resources from the changes to `puppet.conf` - which is always a good feeling when applying 150 or so commits worth of change to these nodes all at once.
+
+Once all the nodes were safely and healthily moved and looked good over a weekend, we moved the CA from the old master to one of the new ones (and set the param for the new master to get `ca = true` in `puppet.conf`), and turned the old masters off.
+
+We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got [PuppetBoard](https://github.com/nedap/puppetboard) running on top of that, which is a great interface to get at the data in PuppetDB.
+
+Down the Road
+-------------
+
+It's probably safe to say we'll always be working to improve the state of config management at Stack Exchange; some of the things we have on the roadmap to work on..
+
+ - [Policy-based Autosigning](https://docs.puppetlabs.com/puppet/latest/reference/ssl_autosign.html#policy-based-autosigning) - we want for a node to come out of the build process and not need to be touched at all before applying the right config for it.  Current thinking is to have some kind of shared secret; the provisioning node can encrypt its hostname with the secret, stick that in a cert attribute, and the master can validate that encryption using a shared key then autosign the cert.
+ - [module_data](https://forge.puppetlabs.com/ripienaar/module_data) - The [params pattern](https://docs.puppetlabs.com/guides/style_guide.html#class-parameter-defaults) is awful.  This module was originally proposed as a part of Puppet's core, allowing modules to have their own Hiera data, so they can have default params for certain OSes or versions - all fetched into class parameter lookups in the same way as your normal Hiera data.  We think this idea is great, and have a couple modules that are perfect use cases for it.  It might not be quite stable, but we're not shy about that.
+ - PuppetDB replication is.. well, it isn't, really.  Right now it's just replication of the underlying Postgres though hot standby or backup/restore; there was a [plan presenteded at last year's PuppetConf](http://www.slideshare.net/PuppetLabs/puppetdb-new-adventures-in-higherorder-automation-puppetconf-2013) with replication features at the application level, but the [related issues](https://tickets.puppetlabs.com/browse/PDB-51) haven't gotten far, yet.  We'll be jumping on using this when it's released.

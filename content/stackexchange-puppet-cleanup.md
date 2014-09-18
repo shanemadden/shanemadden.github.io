@@ -15,7 +15,7 @@ Stack Exchange has been using Puppet to manage all those Linux nodes for years, 
 
 For these, the plan, respectively:
 
- - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.  Also get all the sensitive data bits into files managed by [BlackBox](https://github.com/StackExchange/blackbox), so that we're not walking around with passwords in every laptop that clones the git repo.
+ - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.  Get all the sensitive data bits into files managed by [BlackBox](https://github.com/StackExchange/blackbox), so that we're not walking around with passwords in every laptop that clones the git repo.
  - Make a module that builds the puppet masters reproducibly.
  - Use the [inifile module](https://forge.puppetlabs.com/puppetlabs/inifile) for management of everything's `puppet.conf`
 
@@ -33,7 +33,7 @@ Getting From Here to There
 
 That's a lot of change to implement all at once, and presents a problem: **how the hell to pull that off without breaking the nodes using Puppet?**
 
-Our Puppet config repo lives in GitLab, with TeamCity (the same CI platform used for our software deployment) watching the master branch and, when changed, triggering a "build".  There's nothing to compile, but having a build process is still useful: it validates the syntax of the Puppet manifest files and Hiera data, and assuming that had no problems, deploys the new version to the masters.
+Our Puppet config repo lives in GitLab, with TeamCity (the same CI platform used for our software deployment) watching the master branch and, when changed, triggering a "build".  There's nothing to compile, but having a build process is still useful: it validates the syntax of the Puppet manifest files and Hiera data, and assuming that had no problems, deploys the new version to the masters, then tells us when it's done in chat so we can use the new configs as soon as they're in place.
 
 Starting this process, there were 2 masters - one in New York, and one in our DR site in Oregon (with the two being identical aside from the NY one being the certificate authority).
 
@@ -58,7 +58,7 @@ The `puppet_client` module is also responsible for the agent service and setting
 The `puppet_master` module also gets to do a bunch of other setup..
 
  - Installs all that's needed to [run the master service under Apache with Passenger](https://docs.puppetlabs.com/guides/passenger.html) and manages the Apache config and service for that
- - Configures an authorized SSH key so the TeamCity agents can log in and deploy new versions (and new branches)
+ - Configures an authorized SSH key so the TeamCity agents can log in via SSH to deploy new versions (and new branches)
  - On the master that's a CA, runs a daily backup of the `/var/lib/puppet/ssl/ca` directory to a tgz archive, rsyncs those archives to the other master(s); on the non-CA master(s), restores the most recent archive into `/var/lib/puppet/ssl/ca` daily (so that they're reasonably ready to be the CA if our [primary data center were to drift out to sea](http://status.fogcreek.com/2012/10/services-still-on-backup-power-diesel-bucket-brigade-continues.html))
 
 With all of that handled in Puppet, not only do we get the benefit of a master being built the same way every time, but we can let them get built automatically, which is a great help for..
@@ -112,7 +112,7 @@ So, what this looks like, is..
          - "host/%{::hostname}"
          - "role/%{::role}"
 
- - A node sets its role (and in most cases nothing else, unless there's some node-specific config) in its Hiera file:
+ - A node sets its role (and in most cases nothing else, unless there's some node-specific config as there is here since not all masters are CAs) in its Hiera file:
 
        {
          "puppet_master::ca_master": true,
@@ -139,13 +139,13 @@ So, what this looks like, is..
          "redis::user": "redis"
        }
 
-   ..which is just a simple helper class..
+   ..which is just a simple class to cover the gaps..
 
        class role::redis_primary {
          realize Redis::Instance['core-redis', 'mobile-redis']
        }
 
-This feels like a decent middle ground for us; covers our use cases without too much additional complexity, and keeps (almost) all the config data in one place.
+This feels like a decent middle ground for us; it covers our use cases without too much additional complexity, and keeps (almost) all the config data in one place.
 
 Branch Environments
 -------------------
@@ -230,7 +230,7 @@ Aside from a few permissions changes in `file` resources (ones that were picking
 
 Once all the nodes were safely and healthily moved and looked good over a weekend, we moved the CA from the old master to one of the new ones (and set the param for the new master to get `ca = true` in `puppet.conf`), and turned the old masters off.
 
-We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got [PuppetBoard](https://github.com/nedap/puppetboard) running on top of that, which is a great interface to get at the data in PuppetDB.
+We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got [PuppetBoard](https://github.com/nedap/puppetboard) running on top of that, which is a great modern web interface to get at the data in PuppetDB; some bits that Dashboard exposed aren't available because they aren't in the PuppetDB API, but it's getting there.
 
 Down the Road
 -------------

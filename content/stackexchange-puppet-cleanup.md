@@ -69,6 +69,7 @@ For testing Puppet modules, we have a Vagrant environment that gives us a master
 
 The vagrant systems have a special fact (`puppet.facter = {"vagrant" => "puppet"}` in the Vagrantfile, then a `file` resource persisting that to `/etc/facter/facts.d`) which flags them as being built by vagrant; this gives these some Vagrant-specific config from Hiera, setting an `insecure` parameter for the `puppet_master` class.  We use this to light up autosigning, so the Vagrant boxes built after the first will get a certificate:
 
+    :::puppet
     ini_setting { 'puppet_autosign':
       setting => 'autosign',
       value   => $insecure,
@@ -78,12 +79,14 @@ The vagrant systems have a special fact (`puppet.facter = {"vagrant" => "puppet"
 
 The only other thing that's *special* about what we do through Vagrant is that we want to make sure the Hiera lookups succeed for the built systems regardless of what DNS suffix they have (since we have remote workers, and people's home networks vary):
 
+    :::yaml
     :hierarchy:
       - "host/%{::certname_trusted}"
       - "host/%{::hostname}"
 
 (that `certname_trusted` variable doesn't make sense without context from our `site.pp`...)
 
+    :::puppet
     # workaround until the $trusted hash can be used in hiera.. (https://tickets.puppetlabs.com/browse/HI-14)
     $certname_trusted = $trusted['certname']
 
@@ -102,48 +105,54 @@ So, what this looks like, is..
 
  - In `site.pp`, there's a Hiera lookup for a machine's role before calling `hiera_include()`:
 
-       $role = hiera('role', undef)
-       hiera_include('classes')
+        :::puppet
+        $role = hiera('role', undef)
+        hiera_include('classes')
 
-   ..which is its own tier in `hiera.yaml`..
+    ..which is its own tier in `hiera.yaml`..
 
-       :hierarchy:
-         - "host/%{::certname_trusted}"
-         - "host/%{::hostname}"
-         - "role/%{::role}"
+        :::yaml
+        :hierarchy:
+          - "host/%{::certname_trusted}"
+          - "host/%{::hostname}"
+          - "role/%{::role}"
 
  - A node sets its role (and in most cases nothing else, unless there's some node-specific config as there is here since not all masters are CAs) in its Hiera file:
 
-       {
-         "puppet_master::ca_master": true,
-         "role": "puppet_master"
-       }
+        :::json
+        {
+          "puppet_master::ca_master": true,
+          "role": "puppet_master"
+        }
 
-   ..and the role file does the rest..
+    ..and the role file does the rest..
 
-       {
-         "classes": [
-           "puppet_master",
-           "puppetdb::master::config"
-         ],
-         "puppet_master::secret_setup": true
-       }
+        :::json
+        {
+          "classes": [
+            "puppet_master",
+            "puppetdb::master::config"
+          ],
+          "puppet_master::secret_setup": true
+        }
 
  - And in cases where it's needed, the role file can call a helper class to do anything that needs to happen in a manifest:
 
-       {
-         "classes": [
-           "role::redis_primary",
-           "redis"
-         ],
-         "redis::user": "redis"
-       }
+        :::json
+        {
+          "classes": [
+            "role::redis_primary",
+            "redis"
+          ],
+          "redis::user": "redis"
+        }
 
-   ..which is just a simple class to cover the gaps..
+    ..which is just a simple class to cover the gaps..
 
-       class role::redis_primary {
-         realize Redis::Instance['core-redis', 'mobile-redis']
-       }
+        :::puppet
+        class role::redis_primary {
+          realize Redis::Instance['core-redis', 'mobile-redis']
+        }
 
 This feels like a decent middle ground for us; it covers our use cases without too much additional complexity, and keeps (almost) all the config data in one place.
 
@@ -161,6 +170,7 @@ r10k does a great job of managing deploying the branch environments, as well as 
 
 So instead, we just have a simple script that pulls from the gitlab repo, looks at its branches and deploys them (removing any branches that don't exist any more in git).
 
+    #!bash
     #!/bin/bash -e
 
     #

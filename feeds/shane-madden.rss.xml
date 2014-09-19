@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>shanemadden.net</title><link>http://shanemadden.net/</link><description></description><atom:link href="http://shanemadden.net/feeds/shane-madden.rss.xml" rel="self"></atom:link><lastBuildDate>Wed, 01 Jan 2014 00:01:00 +0000</lastBuildDate><item><title>Cleaning Up Stack Exchange's Puppet Environment</title><link>http://shanemadden.net/stackexchange-puppet-cleanup.html</link><description>&lt;p&gt;One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. People think of Stack Exchange as a Windows shop, and that's partly true since Windows is still the core of the platform, but Linux is also critical to the service we provide. For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  In addition, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.&lt;/p&gt;
+&lt;p&gt;Stack Exchange has been using Puppet to manage all those Linux nodes for years, and the infrastructure and configuration logic was showing its age a bit.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Hiera was in use, but only for some of the class parameters and explicit lookups from some modules; node definitions were still just in a &lt;code&gt;site.pp&lt;/code&gt; manifest.&lt;/li&gt;
+&lt;li&gt;The Puppet masters themselves (we have two, for redundancy and to enable nodes talking to a master local to their site) were artisanally hand-crafted - the process of building a new master wasn't in Puppet.&lt;/li&gt;
+&lt;li&gt;Puppet client config was managed by just laying a static &lt;code&gt;file&lt;/code&gt; resource down at &lt;code&gt;/etc/puppet/puppet.conf&lt;/code&gt;, which was a set file based on the location of the system (a custom fact, parsed from the system's hostname).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;For these, the plan, respectively:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Move all node data to Hiera; &lt;code&gt;site.pp&lt;/code&gt; should be just a &lt;code&gt;hiera_include&lt;/code&gt;.  Get all the sensitive data bits into files managed by &lt;a href="https://github.com/StackExchange/blackbox"&gt;BlackBox&lt;/a&gt;, so that we're not walking around with passwords in every laptop that clones the git repo.&lt;/li&gt;
+&lt;li&gt;Make a module that builds the puppet masters reproducibly.&lt;/li&gt;
+&lt;li&gt;Use the &lt;a href="https://forge.puppetlabs.com/puppetlabs/inifile"&gt;inifile module&lt;/a&gt; for management of each client's &lt;code&gt;puppet.conf&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;In addition to this cleanup, we wanted to get ahead of the game in a few other areas:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://docs.puppetlabs.com/puppet/latest/reference/environments_classic.html#config-file-environments-are-deprecated"&gt;Configuration-file environments are deprecated&lt;/a&gt;; this makes for a good time to do something useful with directory environments - have git branches be set up as puppet environments.&lt;/li&gt;
+&lt;li&gt;Puppet Dashboard is not getting much love these days (since it was forked for the enterprise dashboard then handed to the community to maintain the open source version) - using &lt;a href="https://docs.puppetlabs.com/puppetdb/latest/"&gt;PuppetDB&lt;/a&gt; for storage of that info with a frontend like &lt;a href="https://github.com/nedap/puppetboard"&gt;PuppetBoard&lt;/a&gt; seems like the right direction to be going in.&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://docs.puppetlabs.com/puppet/3/reference/release_notes.html#new-trusted-hash-with-trusted-node-data"&gt;Trusted node data&lt;/a&gt; is better to use than just trusting the identity of a node as it reports it; using the &lt;code&gt;clientcert&lt;/code&gt; fact to determine a node's catalog via Hiera gives authenticated nodes the ability to masquerade as other nodes, which can be a security problem in some environments (like ours).&lt;/li&gt;
+&lt;li&gt;The &lt;a href="https://docs.puppetlabs.com/puppet/3.5/reference/release_notes.html#global-facts-hash"&gt;&lt;code&gt;$facts&lt;/code&gt; hash&lt;/a&gt; is the new way to get at your facts in manifests; cleaner code and no scope problems.&lt;/li&gt;
+&lt;li&gt;The future parser isn't quite ready for use in production, but it's close; we want to start making sure our modules are compatible.&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://docs.puppetlabs.com/guides/scaling_multiple_masters.html#option-4-dns-srv-records"&gt;SRV records&lt;/a&gt; are still labeled as experimental, but I've been using them in production since 3.1 and their utility far outweighs the few rough edges (automatic load balancing, and failover with priority order, for your clients to connect to your masters!)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;Getting From Here to There&lt;/h2&gt;
+&lt;p&gt;That's a lot of change to implement all at once, and presents a problem: &lt;strong&gt;how the hell to pull that off without breaking existing clients?&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Our Puppet config repo lives in GitLab, with TeamCity (the same CI platform used for our software deployment) watching the master branch and triggering a "build" when changes are detected.  There's nothing to compile, but having a build process is still useful: it validates the syntax of the Puppet manifest files and Hiera data, and assuming that had no problems, deploys the new version to the masters, then sends a message to our chat room so we know it's done.&lt;/p&gt;
+&lt;p&gt;Starting this process, there were 2 masters - one in New York, and one in our DR site in Oregon (with the two being identical aside from the NY one being the certificate authority).&lt;/p&gt;
+&lt;p&gt;In order to make all these changes in a non-disruptive way, we decided to build new master nodes in each location, get everything to where we wanted it, then migrate nodes over.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;A new Git branch, &lt;code&gt;new_puppetmasters&lt;/code&gt;, would be where all the changes would occur - and make TeamCity trigger deployments on changes to either branch.&lt;/li&gt;
+&lt;li&gt;New masters would be built - using the new module to build them, tied in to the existing Puppet CA infrastructure but reporting to themselves&lt;/li&gt;
+&lt;li&gt;Temporarily, the &lt;code&gt;production&lt;/code&gt; environment on the new masters would point to the &lt;code&gt;new_puppetmasters&lt;/code&gt; branch (so that nodes reporting to them would get the new stuff) - after migration, this would change back to &lt;code&gt;master&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Nodes could then be migrated over to the new masters with a &lt;code&gt;puppet agent --test --server new_master --noop&lt;/code&gt; to make sure the new environment wasn't going to blow up their applications, then dropping the &lt;code&gt;--noop&lt;/code&gt; to actually move them (the new environment would have the changes to the management of &lt;code&gt;puppet.conf&lt;/code&gt;, so they would stick to it once run against it once)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;Having Puppet Masters Build Your Puppet Masters&lt;/h2&gt;
+&lt;p&gt;&lt;em&gt;yo dawg?&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;The configuration of Puppet itself now happens with two modules; puppet_client (applied globally to all systems) and puppet_master (applied to the masters).  Previously, there was a class in a "shared local stuff" module, creatively named 'site', that installed a static &lt;code&gt;puppet.conf&lt;/code&gt; file. It chose a different &lt;code&gt;puppet.conf&lt;/code&gt; file to install based on whether the node was a puppet master or not, and which datacenter the machine was located in.  All these potential &lt;code&gt;puppet.conf&lt;/code&gt; files were maintained manually, which is a pain.&lt;/p&gt;
+&lt;p&gt;With the new structure, the client module has &lt;code&gt;inifile&lt;/code&gt; resources for settings in &lt;code&gt;puppet.conf&lt;/code&gt; that all nodes get (&lt;code&gt;server&lt;/code&gt; and &lt;code&gt;environment&lt;/code&gt; set to parameter values from Hiera, and some static stuff like &lt;code&gt;stringify_facts = false&lt;/code&gt; and &lt;code&gt;ordering = random&lt;/code&gt;; &lt;a href="http://puppetlabs.com/blog/introducing-manifest-ordered-resources"&gt;manifest ordering&lt;/a&gt; is nice, but we'd like to have the dependencies spelled out so something doesn't bite us when we move resources around in a class - and this keeps us honest on those resource relationships), and the master module has resources for settings that only masters care about (&lt;code&gt;ca&lt;/code&gt; to true or false based on Hiera data, static stuff like &lt;code&gt;trusted_node_data = true&lt;/code&gt;, and &lt;code&gt;dns_alt_names&lt;/code&gt; set to a bunch of combinations of hostnames and domains that might be used to hit the master).&lt;/p&gt;
+&lt;p&gt;The &lt;code&gt;puppet_client&lt;/code&gt; module is also responsible for the agent service and setting the puppet-related packages (&lt;code&gt;hiera&lt;/code&gt;, &lt;code&gt;facter&lt;/code&gt;, &lt;code&gt;augeas&lt;/code&gt;) to the desired versions - with the version being controlled via Hiera data so we can make sure the masters upgrade to new versions of Puppet before the rest of the nodes.&lt;/p&gt;
+&lt;p&gt;The &lt;code&gt;puppet_master&lt;/code&gt; module also gets to do a bunch of other setup..&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Installs all that's needed to &lt;a href="https://docs.puppetlabs.com/guides/passenger.html"&gt;run the master service under Apache with Passenger&lt;/a&gt; and manages the Apache config and service for that&lt;/li&gt;
+&lt;li&gt;Configures an authorized SSH key so the TeamCity agents can log in via SSH to deploy new versions (and new branches)&lt;/li&gt;
+&lt;li&gt;On the master that's a CA, runs a daily backup of the &lt;code&gt;/var/lib/puppet/ssl/ca&lt;/code&gt; directory to a tgz archive, rsyncs those archives to the other master(s); on the non-CA master(s), restores the most recent archive into &lt;code&gt;/var/lib/puppet/ssl/ca&lt;/code&gt; daily (so that they're reasonably ready to be the CA if our &lt;a href="http://status.fogcreek.com/2012/10/services-still-on-backup-power-diesel-bucket-brigade-continues.html"&gt;primary data center were to drift out to sea&lt;/a&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;With all of that handled in Puppet, not only do we get the benefit of a master being built the same way every time, but we can let them get built automatically, which is a great help for..&lt;/p&gt;
+&lt;h3&gt;Vagrant&lt;/h3&gt;
+&lt;p&gt;For testing Puppet modules, we have a Vagrant environment that gives us a master node (build with the same module as the production nodes) and client devices - one by default more if needed.  When starting up the vagrant environment, the first system gets built with the &lt;a href="https://docs.vagrantup.com/v2/provisioning/puppet_apply.html"&gt;&lt;code&gt;puppet apply&lt;/code&gt; provisioner&lt;/a&gt;; subsequent systems get built with the &lt;a href="https://docs.vagrantup.com/v2/provisioning/puppet_agent.html"&gt;&lt;code&gt;puppet agent&lt;/code&gt; provisioner&lt;/a&gt;, getting their configuration from the master node that was just built.&lt;/p&gt;
+&lt;p&gt;The vagrant systems have a special fact (&lt;code&gt;puppet.facter = {"vagrant" =&amp;gt; "puppet"}&lt;/code&gt; in the Vagrantfile, then a &lt;code&gt;file&lt;/code&gt; resource persisting that to &lt;code&gt;/etc/facter/facts.d&lt;/code&gt;) which flags them as being built by vagrant; this gives these some Vagrant-specific config from Hiera, setting an &lt;code&gt;insecure&lt;/code&gt; parameter for the &lt;code&gt;puppet_master&lt;/code&gt; class.  We use this to light up autosigning, so the Vagrant boxes built after the first will get a certificate:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="na"&gt;ini_setting&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;puppet_autosign&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+  &lt;span class="na"&gt;setting&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;autosign&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+  &lt;span class="na"&gt;value&lt;/span&gt;   &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="nv"&gt;$insecure,&lt;/span&gt;
+  &lt;span class="na"&gt;path&lt;/span&gt;    &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;/etc/puppet/puppet.conf&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+  &lt;span class="na"&gt;section&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;main&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;The only other thing that's &lt;em&gt;special&lt;/em&gt; about what we do through Vagrant is that we want to make sure the Hiera lookups succeed for the built systems regardless of what DNS suffix they have (since we have remote workers, and people's home networks vary):&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="l-Scalar-Plain"&gt;:hierarchy&lt;/span&gt;&lt;span class="p-Indicator"&gt;:&lt;/span&gt;
+  &lt;span class="p-Indicator"&gt;-&lt;/span&gt; &lt;span class="s"&gt;&amp;quot;host/%{::certname_trusted}&amp;quot;&lt;/span&gt;
+  &lt;span class="p-Indicator"&gt;-&lt;/span&gt; &lt;span class="s"&gt;&amp;quot;host/%{::hostname}&amp;quot;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;(that &lt;code&gt;certname_trusted&lt;/code&gt; variable doesn't make sense without context from our &lt;code&gt;site.pp&lt;/code&gt;...)&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="c"&gt;# workaround until the $trusted hash can be used in hiera.. (https://tickets.puppetlabs.com/browse/HI-14)&lt;/span&gt;
+&lt;span class="nv"&gt;$certname_trusted&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nv"&gt;$trusted&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;certname&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;(...using this to generate a node's catalog is much better than the node's self-reported &lt;code&gt;fqdn&lt;/code&gt; fact, which can differ from the hostname in the client certificate that was used to authenticate to the puppet master)&lt;/p&gt;
+&lt;p&gt;Other than those couple bits of special casing, the Vagrant systems are built by Puppet identically to our production systems - this gives us a high degree of confidence that the testing we do under Vagrant won't have extra surprises when deployed to production.&lt;/p&gt;
+&lt;h2&gt;Speaking of Hiera..&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;site.pp&lt;/code&gt;, or more specifically, having more than a couple lines in &lt;code&gt;site.pp&lt;/code&gt;, is my enemy.  Classic node definitions in manifests required either inheritance (now &lt;a href="https://docs.puppetlabs.com/puppet/latest/reference/deprecated_language.html#node-inheritance"&gt;deprecated&lt;/a&gt;), regex node names, or making the same change in multiple places, to manage multiple nodes with effectively the same role.  &lt;code&gt;hiera_include()&lt;/code&gt;, plus Hiera's automatic data bindings for class parameters, is a much healthier pattern for fetching configuration data - and for the cases where those don't quite cover the needs of a node definition, all that's needed is a little helper manifest (say, for taking a passed-in array or hash table and making a bunch of instances of a defined type from it).&lt;/p&gt;
+&lt;p&gt;We looked at, but didn't use, the &lt;a href="http://garylarizza.com/blog/2014/02/17/puppet-workflow-part-2/"&gt;roles and profiles pattern&lt;/a&gt; - we're comfortable with just letting Hiera data bindings handle this kind of thing, and lets us define a machine role with pure Hiera, no manifests.&lt;/p&gt;
+&lt;p&gt;So, what this looks like, is..&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;In &lt;code&gt;site.pp&lt;/code&gt;, there's a Hiera lookup for a machine's role before calling &lt;code&gt;hiera_include()&lt;/code&gt;:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="nv"&gt;$role&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="na"&gt;hiera&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;role&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="k"&gt;undef&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;span class="na"&gt;hiera_include&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;classes&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;..which is its own tier in &lt;code&gt;hiera.yaml&lt;/code&gt;..&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="l-Scalar-Plain"&gt;:hierarchy&lt;/span&gt;&lt;span class="p-Indicator"&gt;:&lt;/span&gt;
+  &lt;span class="p-Indicator"&gt;-&lt;/span&gt; &lt;span class="s"&gt;&amp;quot;host/%{::certname_trusted}&amp;quot;&lt;/span&gt;
+  &lt;span class="p-Indicator"&gt;-&lt;/span&gt; &lt;span class="s"&gt;&amp;quot;host/%{::hostname}&amp;quot;&lt;/span&gt;
+  &lt;span class="p-Indicator"&gt;-&lt;/span&gt; &lt;span class="s"&gt;&amp;quot;role/%{::role}&amp;quot;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A node sets its role (and in most cases nothing else, unless there's some node-specific config as there is here since not all masters are CAs) in its Hiera file:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="p"&gt;{&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;puppet_master::ca_master&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="kc"&gt;true&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;role&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;puppet_master&amp;quot;&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;..and the role file does the rest..&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="p"&gt;{&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;classes&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;
+    &lt;span class="s2"&gt;&amp;quot;puppet_master&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+    &lt;span class="s2"&gt;&amp;quot;puppetdb::master::config&amp;quot;&lt;/span&gt;
+  &lt;span class="p"&gt;],&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;puppet_master::secret_setup&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="kc"&gt;true&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;And in cases where it's needed, the role file can call a helper class to do anything that needs to happen in a manifest:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="p"&gt;{&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;classes&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;
+    &lt;span class="s2"&gt;&amp;quot;role::redis_primary&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+    &lt;span class="s2"&gt;&amp;quot;redis&amp;quot;&lt;/span&gt;
+  &lt;span class="p"&gt;],&lt;/span&gt;
+  &lt;span class="nt"&gt;&amp;quot;redis::user&amp;quot;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;redis&amp;quot;&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;..which is just a simple class to cover the gaps..&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="k"&gt;class&lt;/span&gt; &lt;span class="k"&gt;role&lt;/span&gt;&lt;span class="p"&gt;::&lt;/span&gt;&lt;span class="na"&gt;redis_primary&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+  &lt;span class="k"&gt;realize&lt;/span&gt; &lt;span class="na"&gt;Redis&lt;/span&gt;&lt;span class="p"&gt;::&lt;/span&gt;&lt;span class="na"&gt;Instance&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;core-redis&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;mobile-redis&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;This feels like a decent middle ground for us; it covers our use cases without too much additional complexity, and keeps (almost) all the config data in one place.&lt;/p&gt;
+&lt;h2&gt;Branch Environments&lt;/h2&gt;
+&lt;p&gt;Tying VCS branches to Puppet environments is a common thing nowadays with &lt;a href="https://github.com/adrienthebo/r10k"&gt;r10k&lt;/a&gt;, but briefly for those not familiar..&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Puppet nodes can have different environments, which (&lt;a href="https://docs.puppetlabs.com/puppet/latest/reference/environments.html#directory-environments-vs-config-file-environments"&gt;in recent versions&lt;/a&gt;) mean different directories of manifests, modules, and hiera data on the master.  You can have a node temporarily or permanently report to a specific environment.&lt;/li&gt;
+&lt;li&gt;Having VCS branches map to these environments means that you can create a branch for any given change, large or small, and a Puppet environment will be created for it.  You can then have a node report to that branch for however long you need - weeks, one run, or even just a &lt;code&gt;--noop&lt;/code&gt; run, to test the change before it goes live.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;So, pretty much: it's incredibly useful.  If anyone wants to create a new environment, they simply create a new branch.  An individual node can be set to use that environment to test the changes.  We can use GitLab merge requests for code reviews, which enables better collaboration for our module development; any proposed changes can be tested in Vagrant or on actual machines.&lt;/p&gt;
+&lt;p&gt;r10k does a great job of managing deploying the branch environments, as well as handling external module dependencies, but we're not using it.  Doing it right would mean switching each of our internal modules over to its own Git repo, which was just not worth the brain damage that would have incurred.&lt;/p&gt;
+&lt;p&gt;So instead, we just have a simple script that pulls from the gitlab repo, looks at its branches and deploys them (removing any branches that don't exist any more in git).&lt;/p&gt;
+&lt;table class="highlighttable"&gt;&lt;tr&gt;&lt;td class="linenos"&gt;&lt;div class="linenodiv"&gt;&lt;pre&gt; 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59&lt;/pre&gt;&lt;/div&gt;&lt;/td&gt;&lt;td class="code"&gt;&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="c"&gt;#!/bin/bash -e&lt;/span&gt;
+
+&lt;span class="c"&gt;#&lt;/span&gt;
+&lt;span class="c"&gt;# teamcity_pull.sh &lt;/span&gt;
+&lt;span class="c"&gt;#&lt;/span&gt;
+
+&lt;span class="c"&gt;# For parsing the git branch list..&lt;/span&gt;
+&lt;span class="nv"&gt;IFS&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s1"&gt;$&amp;#39;\n&amp;#39;&lt;/span&gt;
+
+&lt;span class="c"&gt;# from http://stackoverflow.com/a/8574392&lt;/span&gt;
+containsElement &lt;span class="o"&gt;()&lt;/span&gt; &lt;span class="o"&gt;{&lt;/span&gt;
+  &lt;span class="nb"&gt;local &lt;/span&gt;e
+  &lt;span class="k"&gt;for &lt;/span&gt;e in &lt;span class="s2"&gt;&amp;quot;${@:2}&amp;quot;&lt;/span&gt;; &lt;span class="k"&gt;do&lt;/span&gt; &lt;span class="o"&gt;[[&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;$e&amp;quot;&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;$1&amp;quot;&lt;/span&gt; &lt;span class="o"&gt;]]&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class="k"&gt;return &lt;/span&gt;0; &lt;span class="k"&gt;done&lt;/span&gt;
+&lt;span class="k"&gt;  return &lt;/span&gt;1
+&lt;span class="o"&gt;}&lt;/span&gt;
+
+&lt;span class="c"&gt;# Fetch new changes into shared repository&lt;/span&gt;
+&lt;span class="c"&gt;# (this shared repo should have been cloned with &lt;/span&gt;
+&lt;span class="c"&gt;#  `git clone --mirror git@host:path/to/puppet.git`)&lt;/span&gt;
+&lt;span class="nb"&gt;cd&lt;/span&gt; /etc/puppet/puppet.git/
+git fetch -p
+
+&lt;span class="c"&gt;# Get list of all branches (these should match remote after the fetch)&lt;/span&gt;
+&lt;span class="nv"&gt;branches&lt;/span&gt;&lt;span class="o"&gt;=(&lt;/span&gt; &lt;span class="k"&gt;$(&lt;/span&gt;git &lt;span class="k"&gt;for&lt;/span&gt;-each-ref --format&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;%(refname:short)&amp;#39;&lt;/span&gt; refs/heads/&lt;span class="k"&gt;)&lt;/span&gt; &lt;span class="o"&gt;)&lt;/span&gt;
+
+&lt;span class="nb"&gt;cd&lt;/span&gt; /etc/puppet/environments/
+
+&lt;span class="c"&gt;# For each branch that exists in the repo, verify that it&amp;#39;s cloned (shared with the main repo)&lt;/span&gt;
+&lt;span class="k"&gt;for &lt;/span&gt;branch in &lt;span class="k"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;branches&lt;/span&gt;&lt;span class="p"&gt;[@]&lt;/span&gt;&lt;span class="k"&gt;}&lt;/span&gt;; &lt;span class="k"&gt;do&lt;/span&gt;
+&lt;span class="k"&gt;  if&lt;/span&gt; &lt;span class="o"&gt;[&lt;/span&gt; -d &lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${branch}&amp;quot;&lt;/span&gt; &lt;span class="o"&gt;]&lt;/span&gt;; &lt;span class="k"&gt;then&lt;/span&gt;
+&lt;span class="k"&gt;    &lt;/span&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${branch} branch and clone exist; pulling updates from shared repo&amp;quot;&lt;/span&gt;
+    &lt;span class="nb"&gt;cd&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${branch}&amp;quot;&lt;/span&gt;
+    git pull
+    &lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${branch} decrypting blackbox..&amp;quot;&lt;/span&gt;
+    &lt;span class="nv"&gt;BASEDIR&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${branch}&amp;quot;&lt;/span&gt; /usr/blackbox/bin/blackbox_postdeploy puppet
+    &lt;span class="nb"&gt;cd&lt;/span&gt; /etc/puppet/environments/
+  &lt;span class="k"&gt;else&lt;/span&gt;
+&lt;span class="k"&gt;    &lt;/span&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${branch} clone does not exist but should; cloning from shared repo&amp;quot;&lt;/span&gt;
+    git clone --shared -b &lt;span class="s2"&gt;&amp;quot;${branch}&amp;quot;&lt;/span&gt; /etc/puppet/puppet.git &lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${branch}&amp;quot;&lt;/span&gt;
+    &lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${branch} decrypting blackbox..&amp;quot;&lt;/span&gt;
+    &lt;span class="nv"&gt;BASEDIR&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${branch}&amp;quot;&lt;/span&gt; /usr/blackbox/bin/blackbox_postdeploy puppet
+  &lt;span class="k"&gt;fi&lt;/span&gt;
+&lt;span class="k"&gt;done&lt;/span&gt;
+
+&lt;span class="c"&gt;# Ignore the &amp;#39;production&amp;#39; symlink from destruction..&lt;/span&gt;
+branches+&lt;span class="o"&gt;=(&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;production&amp;#39;&lt;/span&gt;&lt;span class="o"&gt;)&lt;/span&gt;
+
+&lt;span class="c"&gt;# For each directory that exists in /etc/puppet/environments, verify that there&amp;#39;s a&lt;/span&gt;
+&lt;span class="c"&gt;# branch with that name.  If there is none, the branch is gone - nuke the environment.&lt;/span&gt;
+&lt;span class="nv"&gt;directories&lt;/span&gt;&lt;span class="o"&gt;=(&lt;/span&gt; &lt;span class="k"&gt;$(&lt;/span&gt;ls /etc/puppet/environments/&lt;span class="k"&gt;)&lt;/span&gt; &lt;span class="o"&gt;)&lt;/span&gt;
+
+&lt;span class="c"&gt;# The containsElement function needs IFS to have spaces.&lt;/span&gt;
+&lt;span class="nv"&gt;IFS&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39; &amp;#39;&lt;/span&gt;
+&lt;span class="k"&gt;for &lt;/span&gt;directory in &lt;span class="k"&gt;${&lt;/span&gt;&lt;span class="nv"&gt;directories&lt;/span&gt;&lt;span class="p"&gt;[@]&lt;/span&gt;&lt;span class="k"&gt;}&lt;/span&gt;; &lt;span class="k"&gt;do&lt;/span&gt;
+&lt;span class="k"&gt;  if&lt;/span&gt; ! containsElement &lt;span class="s2"&gt;&amp;quot;${directory}&amp;quot;&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${branches[@]}&amp;quot;&lt;/span&gt;; &lt;span class="k"&gt;then&lt;/span&gt;
+&lt;span class="k"&gt;    &lt;/span&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &lt;span class="s2"&gt;&amp;quot;${directory} exists as a directory but is not a branch in the repo; rm -rf that sucka&amp;quot;&lt;/span&gt;
+    rm -rf &lt;span class="s2"&gt;&amp;quot;/etc/puppet/environments/${directory}/&amp;quot;&lt;/span&gt;
+  &lt;span class="k"&gt;fi&lt;/span&gt;
+&lt;span class="k"&gt;done&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+
+&lt;h2&gt;Pulling the Trigger&lt;/h2&gt;
+&lt;p&gt;With that all in place, we could start moving nodes over to the new masters.  Carefully, with &lt;code&gt;--noop&lt;/code&gt; leading the way, and doing each node or role one-by-one.&lt;/p&gt;
+&lt;p&gt;Aside from a few permissions changes in &lt;code&gt;file&lt;/code&gt; resources (ones that were picking up the permissions from the filesystem instead of in the manifest definition), most of the nodes applied their config against the new masters just as expected: with only changes to the &lt;code&gt;inifile&lt;/code&gt; resources from the changes to &lt;code&gt;puppet.conf&lt;/code&gt; - which is always a good feeling when applying 150 or so commits worth of change to these nodes all at once.&lt;/p&gt;
+&lt;p&gt;Once all the nodes were safely and healthily moved and looked good over a weekend, we moved the CA from the old master to one of the new ones (and set the param for the new master to get &lt;code&gt;ca = true&lt;/code&gt; in &lt;code&gt;puppet.conf&lt;/code&gt;), and turned the old masters off.&lt;/p&gt;
+&lt;p&gt;We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got &lt;a href="https://github.com/nedap/puppetboard"&gt;PuppetBoard&lt;/a&gt; running on top of that, which is a great modern web interface to get at the data in PuppetDB; some bits that Dashboard exposed aren't available because they aren't in the PuppetDB API, but it's getting there.&lt;/p&gt;
+&lt;h2&gt;Down the Road&lt;/h2&gt;
+&lt;p&gt;We'll always be working to improve the state of config management at Stack Exchange. Some of the things we have on the roadmap to work on include:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://docs.puppetlabs.com/puppet/latest/reference/ssl_autosign.html#policy-based-autosigning"&gt;Policy-based Autosigning&lt;/a&gt; - we want a node to come out of the OS install process and not need to be touched at all before applying the right config for it.  Current thinking is to have some kind of shared secret; the provisioning node can encrypt its hostname with the secret, stick that in a cert attribute, and the master can validate that encryption using a shared key then autosign the cert.&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://forge.puppetlabs.com/ripienaar/module_data"&gt;module_data&lt;/a&gt; - This module was &lt;a href="https://tickets.puppetlabs.com/browse/PUP-1157"&gt;originally proposed&lt;/a&gt; as a part of Puppet's core, allowing modules to have their own Hiera data, so they can have default params for certain OSes or versions - all fetched into class parameter lookups in the same way as your normal Hiera data.  We think this idea is great - much better than the &lt;a href="https://docs.puppetlabs.com/guides/style_guide.html#class-parameter-defaults"&gt;params pattern&lt;/a&gt; - and have a couple modules that are perfect use cases for it.  It might not be quite stable, but we're &lt;a href="http://nickcraver.com/blog/2013/11/18/running-stack-overflow-sql-2014-ctp-2/"&gt;not shy about that&lt;/a&gt;.&lt;/li&gt;
+&lt;li&gt;PuppetDB Replication - Right now it's just replication of the underlying Postgres though hot standby or backup/restore; there was a &lt;a href="http://www.slideshare.net/PuppetLabs/puppetdb-new-adventures-in-higherorder-automation-puppetconf-2013"&gt;plan presenteded at last year's PuppetConf&lt;/a&gt; with replication features at the PuppetDB application level, but the &lt;a href="https://tickets.puppetlabs.com/browse/PDB-51"&gt;related issues&lt;/a&gt; haven't gotten far, yet.  We'll be jumping on using this when it's released.&lt;/li&gt;
+&lt;/ul&gt;</description><dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Shane Madden</dc:creator><pubDate>Wed, 01 Jan 2014 00:01:00 +0000</pubDate><guid>tag:shanemadden.net,2014-01-01:stackexchange-puppet-cleanup.html</guid><category>puppet</category><category>stackexchange</category></item></channel></rss>

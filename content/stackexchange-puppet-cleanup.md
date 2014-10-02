@@ -1,5 +1,5 @@
 Title: Cleaning Up Stack Exchange's Puppet Environment
-Date: 2014-01-01 00:01
+Date: 2014-10-02 00:01
 Authors: Shane Madden
 Category: Puppet
 Tags: puppet, stackexchange
@@ -15,14 +15,14 @@ Stack Exchange has been using Puppet to manage all those Linux nodes for years, 
 
 For these, the plan, respectively:
 
- - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.  Get all the sensitive data bits into files managed by [BlackBox](https://github.com/StackExchange/blackbox), so that we're not walking around with passwords in every laptop that clones the git repo.
+ - Move all node data to Hiera; `site.pp` should be just a `hiera_include`.  Get all the sensitive data bits into files managed by [BlackBox](https://github.com/StackExchange/blackbox), so that we're not walking around with cleartext passwords in every laptop that clones the git repo.
  - Make a module that builds the puppet masters reproducibly.
  - Use the [inifile module](https://forge.puppetlabs.com/puppetlabs/inifile) for management of each client's `puppet.conf`
 
 In addition to this cleanup, we wanted to get ahead of the game in a few other areas:
 
  - [Configuration-file environments are deprecated](https://docs.puppetlabs.com/puppet/latest/reference/environments_classic.html#config-file-environments-are-deprecated); this makes for a good time to do something useful with directory environments - have git branches be set up as puppet environments.
- - Puppet Dashboard is not getting much love these days (since it was forked for the enterprise dashboard then handed to the community to maintain the open source version) - using [PuppetDB](https://docs.puppetlabs.com/puppetdb/latest/) for storage of that info with a frontend like [PuppetBoard](https://github.com/nedap/puppetboard) seems like the right direction to be going in.
+ - Puppet Dashboard is not getting much love these days (since it was forked for the enterprise dashboard then handed to the community to maintain the open source version) - using [PuppetDB](https://docs.puppetlabs.com/puppetdb/latest/) for storage of that info with a frontend like [PuppetBoard](https://github.com/nedap/puppetboard) or [Puppet Explorer](https://github.com/spotify/puppetexplorer) seems like the right direction to be going in.
  - [Trusted node data](https://docs.puppetlabs.com/puppet/3/reference/release_notes.html#new-trusted-hash-with-trusted-node-data) is better to use than just trusting the identity of a node as it reports it; using the `clientcert` fact to determine a node's catalog via Hiera gives authenticated nodes the ability to masquerade as other nodes, which can be a security problem in some environments (like ours).
  - The [`$facts` hash](https://docs.puppetlabs.com/puppet/3.5/reference/release_notes.html#global-facts-hash) is the new way to get at your facts in manifests; cleaner code and no scope problems.
  - The future parser isn't quite ready for use in production, but it's close; we want to start making sure our modules are compatible.
@@ -33,7 +33,7 @@ Getting From Here to There
 
 That's a lot of change to implement all at once, and presents a problem: **how the hell to pull that off without breaking existing clients?**
 
-Our Puppet config repo lives in GitLab, with TeamCity (the same CI platform used for our software deployment) watching the master branch and triggering a "build" when changes are detected.  There's nothing to compile, but having a build process is still useful: it validates the syntax of the Puppet manifest files and Hiera data, and assuming that had no problems, deploys the new version to the masters, then sends a message to our chat room so we know it's done.
+Our Puppet config repo lives in GitLab, with TeamCity (the same CI platform used for our software builds and deployment) watching the master branch and triggering a "build" when changes are detected.  There's nothing to compile, but having a build process is still useful: it validates the syntax of the Puppet manifest files and Hiera data, and assuming that had no problems, deploys the new version to the masters, then sends a message to our chat room so we know it's done.
 
 Starting this process, there were 2 masters - one in New York, and one in our DR site in Oregon (with the two being identical aside from the NY one being the certificate authority).
 
@@ -49,7 +49,7 @@ Having Puppet Masters Build Your Puppet Masters
 
 *yo dawg?*
 
-The configuration of Puppet itself now happens with two modules; puppet_client (applied globally to all systems) and puppet_master (applied to the masters).  Previously, there was a class in a "shared local stuff" module, creatively named 'site', that installed a static `puppet.conf` file. It chose a different `puppet.conf` file to install based on whether the node was a puppet master or not, and which datacenter the machine was located in.  All these potential `puppet.conf` files were maintained manually, which is a pain.
+The configuration of Puppet itself now happens with two modules; puppet_client (applied globally to all systems) and puppet_master (applied to the masters).  Previously, there was a class in a "shared local stuff" module, creatively named 'site', that installed a static `puppet.conf` file. It chose a different `puppet.conf` file to install based on whether the node was a puppet master or not, and which datacenter the machine was located in.  All these potential `puppet.conf` files were maintained manually, which was a pain.
 
 With the new structure, the client module has `inifile` resources for settings in `puppet.conf` that all nodes get (`server` and `environment` set to parameter values from Hiera, and some static stuff like `stringify_facts = false` and `ordering = random`; [manifest ordering](http://puppetlabs.com/blog/introducing-manifest-ordered-resources) is nice, but we'd like to have the dependencies spelled out so something doesn't bite us when we move resources around in a class - and this keeps us honest on those resource relationships), and the master module has resources for settings that only masters care about (`ca` to true or false based on Hiera data, static stuff like `trusted_node_data = true`, and `dns_alt_names` set to a bunch of combinations of hostnames and domains that might be used to hit the master).
 
@@ -57,9 +57,9 @@ The `puppet_client` module is also responsible for the agent service and setting
 
 The `puppet_master` module also gets to do a bunch of other setup..
 
- - Installs all that's needed to [run the master service under Apache with Passenger](https://docs.puppetlabs.com/guides/passenger.html) and manages the Apache config and service for that
- - Configures an authorized SSH key so the TeamCity agents can log in via SSH to deploy new versions (and new branches)
- - On the master that's a CA, runs a daily backup of the `/var/lib/puppet/ssl/ca` directory to a tgz archive, rsyncs those archives to the other master(s); on the non-CA master(s), restores the most recent archive into `/var/lib/puppet/ssl/ca` daily (so that they're reasonably ready to be the CA if our [primary data center were to drift out to sea](http://status.fogcreek.com/2012/10/services-still-on-backup-power-diesel-bucket-brigade-continues.html))
+ - Installs all that's needed to [run the master service under Apache with Passenger](https://docs.puppetlabs.com/guides/passenger.html) and manages the Apache config and service for that (soon to be [Puppet Server](http://puppetlabs.com/blog/puppet-server-bringing-soa-to-a-puppet-master-near-you)'s install-package-and-done configuration),
+ - Configures an authorized SSH key so the TeamCity agents can log in via SSH to deploy new versions (and new branches), 
+ - On the master that's a CA, runs a daily backup of the `/var/lib/puppet/ssl/ca` directory to a tgz archive, rsyncs those archives to the other master(s); on the non-CA master(s), restores the most recent archive into `/var/lib/puppet/ssl/ca` daily (so that they're reasonably ready to be the CA if our [primary data center were to drift out to sea](http://status.fogcreek.com/2012/10/services-still-on-backup-power-diesel-bucket-brigade-continues.html)).
 
 With all of that handled in Puppet, not only do we get the benefit of a master being built the same way every time, but we can let them get built automatically, which is a great help for..
 
@@ -236,17 +236,17 @@ Pulling the Trigger
 
 With that all in place, we could start moving nodes over to the new masters.  Carefully, with `--noop` leading the way, and doing each node or role one-by-one.
 
-Aside from a few permissions changes in `file` resources (ones that were picking up the permissions from the filesystem instead of in the manifest definition), most of the nodes applied their config against the new masters just as expected: with only changes to the `inifile` resources from the changes to `puppet.conf` - which is always a good feeling when applying 150 or so commits worth of change to these nodes all at once.
+Aside from a few permissions changes in `file` resources (ones that were picking up the permissions from the filesystem instead of in the manifest definition), most of the nodes applied their config against the new masters just as expected: with only changes to the `inifile` resources from the changes to `puppet.conf` - which is always a good feeling when applying 150 or so commits worth of change to these nodes all at once.  The lone exception was a couple of unintended resource refreshes from permissions change on files, due to different permissions on the new working copy on file resources without set permissions.
 
 Once all the nodes were safely and healthily moved and looked good over a weekend, we moved the CA from the old master to one of the new ones (and set the param for the new master to get `ca = true` in `puppet.conf`), and turned the old masters off.
 
-We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got [PuppetBoard](https://github.com/nedap/puppetboard) running on top of that, which is a great modern web interface to get at the data in PuppetDB; some bits that Dashboard exposed aren't available because they aren't in the PuppetDB API, but it's getting there.
+We threw up a boilerplate PuppetDB server in each location (with just a lazy Postgres backup/restore on a cron moving data between them), and got [PuppetBoard](https://github.com/nedap/puppetboard) running on top of that, which is a great modern web interface to get at the data in PuppetDB; some bits of information that Dashboard exposed aren't available in PuppetBoard because they aren't in the PuppetDB API, but that's improving constantly with new PuppetDB releases.
 
 Down the Road
 -------------
 
 We'll always be working to improve the state of config management at Stack Exchange. Some of the things we have on the roadmap to work on include:
 
- - [Policy-based Autosigning](https://docs.puppetlabs.com/puppet/latest/reference/ssl_autosign.html#policy-based-autosigning) - we want a node to come out of the OS install process and not need to be touched at all before applying the right config for it.  Current thinking is to have some kind of shared secret; the provisioning node can encrypt its hostname with the secret, stick that in a cert attribute, and the master can validate that encryption using a shared key then autosign the cert.
+ - [Policy-based Autosigning](https://docs.puppetlabs.com/puppet/latest/reference/ssl_autosign.html#policy-based-autosigning) - we want a node to come out of the OS install process and not need to be touched at all before applying the right config for it.  Our current thinking is to have some kind of shared secret; the provisioning node can encrypt its hostname with the secret, stick that in a cert attribute, and the master can validate that encryption using a shared key then autosign the cert.
  - [module_data](https://forge.puppetlabs.com/ripienaar/module_data) - This module was [originally proposed](https://tickets.puppetlabs.com/browse/PUP-1157) as a part of Puppet's core, allowing modules to have their own Hiera data, so they can have default params for certain OSes or versions - all fetched into class parameter lookups in the same way as your normal Hiera data.  We think this idea is great - much better than the [params pattern](https://docs.puppetlabs.com/guides/style_guide.html#class-parameter-defaults) - and have a couple modules that are perfect use cases for it.  It might not be quite stable, but we're [not shy about that](http://nickcraver.com/blog/2013/11/18/running-stack-overflow-sql-2014-ctp-2/).
- - PuppetDB Replication - Right now it's just replication of the underlying Postgres though hot standby or backup/restore; there was a [plan presenteded at last year's PuppetConf](http://www.slideshare.net/PuppetLabs/puppetdb-new-adventures-in-higherorder-automation-puppetconf-2013) with replication features at the PuppetDB application level, but the [related issues](https://tickets.puppetlabs.com/browse/PDB-51) haven't gotten far, yet.  We'll be jumping on using this when it's released.
+ - PuppetDB Replication - Right now it's just replication of the underlying Postgres though hot standby or backup/restore; there was a [plan presented at last year's PuppetConf](http://www.slideshare.net/PuppetLabs/puppetdb-new-adventures-in-higherorder-automation-puppetconf-2013) with replication features at the PuppetDB application level, but the [related issues](https://tickets.puppetlabs.com/browse/PDB-51) haven't gotten far, yet.  We'll be jumping on using this when it's released.

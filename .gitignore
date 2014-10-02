@@ -1,5 +1,6 @@
 *.pyc
 /cache
 /output
+/theme
 srv.pid
 pelican.pid

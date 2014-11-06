@@ -1,5 +1,139 @@
 <?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom"><title>shanemadden.net</title><link href="http://shanemadden.net/" rel="alternate"></link><link href="http://shanemadden.net/feeds/shane-madden.atom.xml" rel="self"></link><id>http://shanemadden.net/</id><updated>2014-10-02T00:01:00+00:00</updated><entry><title>Cleaning Up Stack Exchange's Puppet Environment</title><link href="http://shanemadden.net/stackexchange-puppet-cleanup.html" rel="alternate"></link><updated>2014-10-02T00:01:00+00:00</updated><author><name>Shane Madden</name></author><id>tag:shanemadden.net,2014-10-02:stackexchange-puppet-cleanup.html</id><summary type="html">&lt;p&gt;One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. People think of Stack Exchange as a Windows shop, and that's partly true since Windows is still the core of the platform, but Linux is also critical to the service we provide. For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  In addition, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.&lt;/p&gt;
+<feed xmlns="http://www.w3.org/2005/Atom"><title>shanemadden.net</title><link href="http://shanemadden.net/" rel="alternate"></link><link href="http://shanemadden.net/feeds/shane-madden.atom.xml" rel="self"></link><id>http://shanemadden.net/</id><updated>2014-11-05T00:01:00+00:00</updated><entry><title>ipset, for Fun and Profit!</title><link href="http://shanemadden.net/ipset-for-performance-and-profit.html" rel="alternate"></link><updated>2014-11-05T00:01:00+00:00</updated><author><name>Shane Madden</name></author><id>tag:shanemadden.net,2014-11-05:ipset-for-performance-and-profit.html</id><summary type="html">&lt;p&gt;At Stack Exchange, we have a certain class of problems that we dub "Stack Overflow problems", which are the kind of thing that nobody ever runs into unless they're pushing systems and software as hard as we push them.&lt;/p&gt;
+&lt;blockquote class="twitter-tweet" lang="en"&gt;&lt;p&gt;Random thought: we should do a post on various technologies that couldn’t handle the Stack Overflow load and had to be replaced.&lt;/p&gt;&amp;mdash; Nick Craver (@Nick_Craver) &lt;a href="https://twitter.com/Nick_Craver/status/526879547703435264"&gt;October 27, 2014&lt;/a&gt;&lt;/blockquote&gt;
+
+&lt;script async src="//platform.twitter.com/widgets.js" charset="utf-8"&gt;&lt;/script&gt;
+
+&lt;p&gt;This is one of those times - it took an interesting confluence of events to cause a problem, but other use cases might run into the same thing, so I figure it's worth doing some writing on.&lt;/p&gt;
+&lt;p&gt;A little background; when you load any page on a Stack Exchange site, you're connecting to our HAProxy load balancers, which make a backend request to the IIS servers to fetch your response.  Most of our systems live behind our ASA firewalls, but half a million open connections all the time (websockets!) and ~3k HTTP requests per second is something we don't want to subject our ASAs to (and we'd need much bigger ones), so the HAProxy nodes have one of their network interfaces directly on the internet.&lt;/p&gt;
+&lt;h2&gt;conntrack_must_die&lt;/h2&gt;
+&lt;p&gt;&lt;em&gt;..was the branch name in puppet.&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;HTTP servers directly on the internet, so: iptables for all the access controls!  And conntrack, which can fall over under even moderate load!  A lot of tuning went into problems with socket exhaustion and conntrack before my time, but a couple months back, we finally got to the point where conntrack was filling up too often, causing too many headaches on load balancer failover, and we did something about it: stopped needing it.&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="c"&gt;# in the raw table..&lt;/span&gt;
+&lt;span class="c"&gt;# most things, StackOverflow.com&lt;/span&gt;
+-A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j NOTRACK
+-A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 80 -j NOTRACK
+-A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j NOTRACK
+-A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 443 -j NOTRACK
+&lt;span class="c"&gt;# careers.stackexchange.com&lt;/span&gt;
+-A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j NOTRACK
+-A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 80 -j NOTRACK
+-A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j NOTRACK
+-A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 443 -j NOTRACK
+&lt;span class="c"&gt;# (the astute reader might noticed a bad idea here; we&amp;#39;ll get to that)&lt;/span&gt;
+
+&lt;span class="c"&gt;# and in the filter table..&lt;/span&gt;
+&lt;span class="c"&gt;# most things, StackOverflow.com&lt;/span&gt;
+-A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j ACCEPT
+-A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j ACCEPT
+&lt;span class="c"&gt;# careers.stackexchange.com&lt;/span&gt;
+-A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j ACCEPT
+-A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j ACCEPT
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;So, no more conntrack - which is great for RAM usage and great for not dropping connections when the table fills up.  But instead of hitting a related/established rule at the top of the chain, all the subsequent traffic for the connection needs to traverse the chain.&lt;/p&gt;
+&lt;p&gt;Another thing that's been in iptables for forever is hard bans of particular IPs - bad crawlers, content scrapers, spammers.. suffice to say, we have to be pretty unhappy with you to give you a straight-up DROP in iptables.  The commit messages tend to have profanity.  Which adds another ~650 rules to traverse.&lt;/p&gt;
+&lt;p&gt;More rules to traverse without conntrack, which makes for more CPU usage from rule processing.&lt;/p&gt;
+&lt;p&gt;Oh, and we also added more rules, didn't we?  That bad idea from above?&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;-A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j NOTRACK
+-A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 80 -j NOTRACK
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;Yeah, those don't have an &lt;code&gt;ACCEPT&lt;/code&gt; happening after them (a derp moment on my part), we're just marking the packet then continuing to evaluate the chain, for each of the listener IP/port combos.  &lt;strong&gt;&lt;em&gt;Don't do this!&lt;/em&gt;&lt;/strong&gt;  The &lt;code&gt;PREROUTING&lt;/code&gt; and &lt;code&gt;OUTPUT&lt;/code&gt; chains in the &lt;code&gt;raw&lt;/code&gt; table both have about a hundred rules, and while the most hit rules are at the top, we're not actually dropping out of the chain after a match, just continuing to evaluate it.&lt;/p&gt;
+&lt;p&gt;All this adds up to hundreds of extra rules being checked on each input packet, and a hundred or so on each output packet.  But modern CPUs are fast and checking access lists is easy work; no big deal, right?  ASICs are for suckers?  CPU cooked a little hotter, which we noticed but didn't worry too much about since we had expected some increase after removing conntrack.&lt;/p&gt;
+&lt;p&gt;Then this happens..&lt;/p&gt;
+&lt;p&gt;&lt;img alt="Packets per second" src="http://shanemadden.net/images/ipset-packets-per-second.png" /&gt;&lt;/p&gt;
+&lt;p&gt;That's packets per second.  People on the internet are jerks.  We're pretty sure it was mostly SYN flood, but our mirror port couldn't keep up so we haven't gotten a great look at the traffic.&lt;/p&gt;
+&lt;p&gt;Processing all those packets put something over the edge in the load balancers.  It triggered a fun chain reaction; VRRP between the load balancers fell apart and they started fighting over the IP addresses, the switches got sick of it after a few minutes of both yelling gratuitous ARP with the same MAC and started doing &lt;a href="http://en.wikipedia.org/wiki/Unicast_flood"&gt;unicast flooding&lt;/a&gt; of all those packets, which started causing havoc with other systems on that network.&lt;/p&gt;
+&lt;p&gt;We went back and looked at what was going on with the CPU, and the cumulative effect of the increased evaluation of old rules plus the addition of new rules meant that the HAProxy process handing our most active listener addresses was pegging a CPU core even under normal load, and over half of that CPU time was due to iptables evaluation.  Not so good.&lt;/p&gt;
+&lt;h2&gt;Now that it has our attention...&lt;/h2&gt;
+&lt;p&gt;How do we deal with this?&lt;/p&gt;
+&lt;p&gt;Well, one thing we have going for us is that the rules are all grouped nicely; a ton of the same kind of &lt;code&gt;NOTRACK&lt;/code&gt; for listener address/port combos, a ton of blacklisted specific addresses or networks.&lt;/p&gt;
+&lt;p&gt;&lt;a href="http://ipset.netfilter.org/"&gt;ipset&lt;/a&gt; to the rescue.  It can create hashed groups of addresses or networks or address/port combinations, then a single iptables rule can evaluate against all of them at one time.&lt;/p&gt;
+&lt;p&gt;Instead of..&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;is it this address? no..&lt;/p&gt;
+&lt;p&gt;is it this address? no..&lt;/p&gt;
+&lt;p&gt;...(repeat 650x)...&lt;/p&gt;
+&lt;p&gt;is it this address? yes! drop that sucka.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;..you get..&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;is it one of these addresses?&lt;/p&gt;
+&lt;p&gt;...hash lookup...&lt;/p&gt;
+&lt;p&gt;yup, ignore that jerk.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;Which is potentially an enormous performance gain; iptables is only as smart as you tell it to be, and if you tell it to evaluate rules in painstaking sequence instead of "any of thems!", it'll do it.&lt;/p&gt;
+&lt;h2&gt;Puppets!&lt;/h2&gt;
+&lt;p&gt;So, to roll this out and make future changes easy, we put a simple little new class in our module managing the iptables rules..&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="k"&gt;class&lt;/span&gt; &lt;span class="na"&gt;iptables&lt;/span&gt;&lt;span class="p"&gt;::&lt;/span&gt;&lt;span class="na"&gt;sets&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;
+  &lt;span class="nv"&gt;$sets&lt;/span&gt;
+&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+  &lt;span class="k"&gt;package&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;ipset&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+    &lt;span class="na"&gt;ensure&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;present&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+  &lt;span class="p"&gt;}&lt;/span&gt;
+  &lt;span class="k"&gt;file&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;/etc/sysconfig/ipset&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+    &lt;span class="na"&gt;content&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;template&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;iptables/ipset.erb&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt;
+    &lt;span class="na"&gt;require&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;Package&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;ipset&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;],&lt;/span&gt;
+    &lt;span class="k"&gt;notify&lt;/span&gt;  &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;Service&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;ipset&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;],&lt;/span&gt;
+  &lt;span class="p"&gt;}&lt;/span&gt;
+  &lt;span class="k"&gt;service&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="s"&gt;&amp;#39;ipset&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+    &lt;span class="na"&gt;ensure&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;running&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+    &lt;span class="na"&gt;enable&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;true&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+    &lt;span class="k"&gt;before&lt;/span&gt; &lt;span class="o"&gt;=&amp;gt;&lt;/span&gt; &lt;span class="k"&gt;File&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s"&gt;&amp;#39;iptables-file&amp;#39;&lt;/span&gt;&lt;span class="p"&gt;],&lt;/span&gt;
+  &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;And that template..&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="cp"&gt;&amp;lt;%&lt;/span&gt; &lt;span class="vi"&gt;@sets&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;keys&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;sort&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;each&lt;/span&gt; &lt;span class="k"&gt;do&lt;/span&gt; &lt;span class="o"&gt;|&lt;/span&gt;&lt;span class="n"&gt;setname&lt;/span&gt;&lt;span class="o"&gt;|&lt;/span&gt; &lt;span class="cp"&gt;-%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;span class="x"&gt;create &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%=&lt;/span&gt; &lt;span class="n"&gt;setname&lt;/span&gt; &lt;span class="cp"&gt;%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt; &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%=&lt;/span&gt; &lt;span class="vi"&gt;@sets&lt;/span&gt;&lt;span class="o"&gt;[&lt;/span&gt;&lt;span class="n"&gt;setname&lt;/span&gt;&lt;span class="o"&gt;][&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;config&amp;#39;&lt;/span&gt;&lt;span class="o"&gt;]&lt;/span&gt; &lt;span class="cp"&gt;%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;span class="x"&gt;  &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%-&lt;/span&gt; &lt;span class="vi"&gt;@sets&lt;/span&gt;&lt;span class="o"&gt;[&lt;/span&gt;&lt;span class="n"&gt;setname&lt;/span&gt;&lt;span class="o"&gt;][&lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;members&amp;#39;&lt;/span&gt;&lt;span class="o"&gt;].&lt;/span&gt;&lt;span class="n"&gt;keys&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;sort&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;each&lt;/span&gt; &lt;span class="k"&gt;do&lt;/span&gt; &lt;span class="o"&gt;|&lt;/span&gt;&lt;span class="n"&gt;net&lt;/span&gt;&lt;span class="o"&gt;|&lt;/span&gt; &lt;span class="cp"&gt;-%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;span class="x"&gt;add &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%=&lt;/span&gt; &lt;span class="n"&gt;setname&lt;/span&gt; &lt;span class="cp"&gt;%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt; &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%=&lt;/span&gt; &lt;span class="n"&gt;net&lt;/span&gt; &lt;span class="cp"&gt;%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;span class="x"&gt;  &lt;/span&gt;&lt;span class="cp"&gt;&amp;lt;%-&lt;/span&gt; &lt;span class="k"&gt;end&lt;/span&gt; &lt;span class="cp"&gt;-%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;span class="cp"&gt;&amp;lt;%&lt;/span&gt; &lt;span class="k"&gt;end&lt;/span&gt; &lt;span class="cp"&gt;-%&amp;gt;&lt;/span&gt;&lt;span class="x"&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;..which gets its data from a Hiera data file like this:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="x"&gt;&amp;quot;iptables::sets::sets&amp;quot;: {&lt;/span&gt;
+&lt;span class="x"&gt;  &amp;quot;listeners&amp;quot;: {&lt;/span&gt;
+&lt;span class="x"&gt;    &amp;quot;config&amp;quot;: &amp;quot;hash:ip,port family inet hashsize 1024 maxelem 65536&amp;quot;,&lt;/span&gt;
+&lt;span class="x"&gt;    &amp;quot;members&amp;quot;: {&lt;/span&gt;
+&lt;span class="x"&gt;      &amp;quot;198.252.206.16,tcp:80&amp;quot;: {&amp;quot;comment&amp;quot;:&amp;quot;most things, StackOverflow.com - NY, HTTP&amp;quot;},&lt;/span&gt;
+&lt;span class="x"&gt;      &amp;quot;198.252.206.16,tcp:443&amp;quot;: {&amp;quot;comment&amp;quot;:&amp;quot;most things, StackOverflow.com - NY, HTTPS&amp;quot;},&lt;/span&gt;
+&lt;span class="x"&gt;      ...&lt;/span&gt;
+&lt;span class="x"&gt;    }&lt;/span&gt;
+&lt;span class="x"&gt;  },&lt;/span&gt;
+&lt;span class="x"&gt;  &amp;quot;blacklist&amp;quot;: {&lt;/span&gt;
+&lt;span class="x"&gt;    &amp;quot;config&amp;quot;: &amp;quot;hash:net family inet hashsize 1024 maxelem 65536&amp;quot;,&lt;/span&gt;
+&lt;span class="x"&gt;    &amp;quot;members&amp;quot;: {&lt;/span&gt;
+&lt;span class="x"&gt;      &amp;quot;192.0.2.0/24&amp;quot;: {&amp;quot;comment&amp;quot;:&amp;quot;Insulted Nick&amp;#39;s hair&amp;quot;},&lt;/span&gt;
+&lt;span class="x"&gt;      ...&lt;/span&gt;
+&lt;span class="x"&gt;    }&lt;/span&gt;
+&lt;span class="x"&gt;  }&lt;/span&gt;
+&lt;span class="x"&gt;}&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;All that rule work from earlier?  Now the blacklist is applied with just&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;-A INPUT -m &lt;span class="nb"&gt;set&lt;/span&gt; --set blacklist src -j DROP
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;while the listener accepts are dead simple too,&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre&gt;&lt;span class="c"&gt;# raw table&lt;/span&gt;
+-A PREROUTING -m &lt;span class="nb"&gt;set&lt;/span&gt; --set listeners dst,dst -j NOTRACK
+-A OUTPUT -m &lt;span class="nb"&gt;set&lt;/span&gt; --set listeners src,src -j NOTRACK
+&lt;span class="c"&gt;# filter table&lt;/span&gt;
+-A INPUT -m &lt;span class="nb"&gt;set&lt;/span&gt; --set listeners dst,dst -j ACCEPT
+&lt;/pre&gt;&lt;/div&gt;
+
+
+&lt;p&gt;Which, in total, dropped our CPU use from iptables for the hardest hit listeners from around 55% to around 2%, freeing up a ton of head room for next time we see a huge storm of packets like that.  All we've really lost in the exchange is per-rule counters that we had, which were handy for determining which blacklisted addresses were still hitting us, but we can still test individual addresses by adding a rule for them, &lt;em&gt;without&lt;/em&gt; eating a CPU alive.  Pretty good deal.&lt;/p&gt;</summary><category term="puppet"></category><category term="stackexchange"></category></entry><entry><title>Cleaning Up Stack Exchange's Puppet Environment</title><link href="http://shanemadden.net/stackexchange-puppet-cleanup.html" rel="alternate"></link><updated>2014-10-02T00:01:00+00:00</updated><author><name>Shane Madden</name></author><id>tag:shanemadden.net,2014-10-02:stackexchange-puppet-cleanup.html</id><summary type="html">&lt;p&gt;One of the first big changes I've worked on in the few months I've been at Stack Exchange has been to modernize the Puppet environment. People think of Stack Exchange as a Windows shop, and that's partly true since Windows is still the core of the platform, but Linux is also critical to the service we provide. For our public-facing services, we're running Windows for the web and database servers (IIS and MSSQL), and Linux for the Redis cache nodes, HAProxy load balancers, and ElasticSearch servers.  In addition, we have lots of other Linux systems - Apache httpd for the blogs, mail servers for sending out post notifications and newsletters, monitoring and logging systems, and a bunch of other internal applications.&lt;/p&gt;
 &lt;p&gt;Stack Exchange has been using Puppet to manage all those Linux nodes for years, and the infrastructure and configuration logic was showing its age a bit.&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Hiera was in use, but only for some of the class parameters and explicit lookups from some modules; node definitions were still just in a &lt;code&gt;site.pp&lt;/code&gt; manifest.&lt;/li&gt;

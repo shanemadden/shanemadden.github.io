@@ -7,6 +7,7 @@ SITENAME = u'shanemadden.net'
 SITEURL = ''
 
 PATH = 'content'
+STATIC_PATHS = ['images']
 THEME = 'pelican-bootstrap3'
 
 TIMEZONE = 'UTC'

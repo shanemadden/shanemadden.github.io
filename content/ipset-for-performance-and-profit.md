@@ -65,7 +65,7 @@ Then this happens..
 
 That's packets per second.  People on the internet are jerks.  We're pretty sure it was mostly SYN flood, but our mirror port couldn't keep up so we haven't gotten a great look at the traffic.
 
-Processing all those packets put something over the edge in the load balancers.  It triggered a fun chain reaction; VRRP between the load balancers fell apart and they started fighting over the IP addresses, the switches got sick of it after a few minutes of both yelling gratuitous ARP with the same MAC and started doing [unicast flooding](http://en.wikipedia.org/wiki/Unicast_flood) of all those packets, which started causing havoc with other systems on that network.
+Processing all those packets put something over the edge in the load balancers.  It triggered a fun chain reaction; VRRP between the load balancers fell apart and they started fighting over the IP addresses.  At some point the NICs on the load balancers crashed, we're not quite sure what's up with that. The core switches got sick of it after a few minutes of both yelling gratuitous ARP with the same MAC and started doing [unicast flooding](http://en.wikipedia.org/wiki/Unicast_flood) of all those packets, which started causing havoc with other systems on that network.  *Cats and dogs, living together.* It was a bad few minutes.
 
 We went back and looked at what was going on with the CPU, and the cumulative effect of the increased evaluation of old rules plus the addition of new rules meant that the HAProxy process handing our most active listener addresses was pegging a CPU core even under normal load, and over half of that CPU time was due to iptables evaluation.  Not so good.
 
@@ -167,4 +167,10 @@ while the listener accepts are dead simple too,
     # filter table
     -A INPUT -m set --set listeners dst,dst -j ACCEPT
 
-Which, in total, dropped our CPU use from iptables for the hardest hit listeners from around 55% to around 2%, freeing up a ton of head room for next time we see a huge storm of packets like that.  All we've really lost in the exchange is per-rule counters that we had, which were handy for determining which blacklisted addresses were still hitting us, but we can still test individual addresses by adding a rule for them, *without* eating a CPU alive.  Pretty good deal.
+Which, in total, dropped our CPU use from iptables for the hardest hit listeners from around 55% to around 2%, freeing up a ton of head room for next time we see a huge storm of packets like that.
+
+Here's the CPU use of the processes for that specific HAProxy service, with the high one being the one handling the sockets; I bet you can tell when the change went in:
+
+![CPU]({filename}/images/ipset-cpu-use.png)
+
+All we've really lost in the exchange is per-rule counters that we had, which were handy for determining which blacklisted addresses were still hitting us, but we can still test individual addresses by adding a rule for them, *without* eating a CPU alive.  Pretty good deal.

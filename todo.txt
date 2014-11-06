@@ -6,3 +6,5 @@ serf dynamic dns setup
 
 settings - both base and for theme
 set up hosting - push to master (and change it to default) add CNAME file
+
+improve make github --- have a second clone that lives on master branch which is the target output dir, build from source with commit message of "build from source r$hash_"

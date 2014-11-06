@@ -33,7 +33,7 @@ HTTP servers directly on the internet, so: iptables for all the access controls!
     -A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 80 -j NOTRACK
     -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j NOTRACK
     -A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 443 -j NOTRACK
-    # (the astute reader might noticed a bad idea here; we'll get to that)
+    # (the astute reader might notice a bad idea here; we'll get to that)
 
     # and in the filter table..
     # most things, StackOverflow.com

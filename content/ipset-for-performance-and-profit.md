@@ -28,7 +28,7 @@ HTTP servers directly on the internet, so: iptables for all the access controls!
     -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 80 -j NOTRACK
     -A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j NOTRACK
     -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 443 -j NOTRACK
-    # careers.stackexchange.com
+    # careers.stackoverflow.com
     -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j NOTRACK
     -A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 80 -j NOTRACK
     -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j NOTRACK
@@ -39,7 +39,7 @@ HTTP servers directly on the internet, so: iptables for all the access controls!
     # most things, StackOverflow.com
     -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j ACCEPT
     -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j ACCEPT
-    # careers.stackexchange.com
+    # careers.stackoverflow.com
     -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j ACCEPT
     -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j ACCEPT
 

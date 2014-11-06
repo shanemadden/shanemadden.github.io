@@ -123,7 +123,7 @@ shanemadden.net            </a>
 -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 80 -j NOTRACK
 -A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j NOTRACK
 -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 443 -j NOTRACK
-<span class="c"># careers.stackexchange.com</span>
+<span class="c"># careers.stackoverflow.com</span>
 -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j NOTRACK
 -A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 80 -j NOTRACK
 -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j NOTRACK
@@ -134,7 +134,7 @@ shanemadden.net            </a>
 <span class="c"># most things, StackOverflow.com</span>
 -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j ACCEPT
 -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j ACCEPT
-<span class="c"># careers.stackexchange.com</span>
+<span class="c"># careers.stackoverflow.com</span>
 -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j ACCEPT
 -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j ACCEPT
 </pre></div>

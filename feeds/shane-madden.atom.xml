@@ -15,7 +15,7 @@
 -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 80 -j NOTRACK
 -A PREROUTING -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j NOTRACK
 -A OUTPUT -s 198.252.206.16/32 -p tcp -m tcp --sport 443 -j NOTRACK
-&lt;span class="c"&gt;# careers.stackexchange.com&lt;/span&gt;
+&lt;span class="c"&gt;# careers.stackoverflow.com&lt;/span&gt;
 -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j NOTRACK
 -A OUTPUT -s 198.252.206.17/32 -p tcp -m tcp --sport 80 -j NOTRACK
 -A PREROUTING -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j NOTRACK
@@ -26,7 +26,7 @@
 &lt;span class="c"&gt;# most things, StackOverflow.com&lt;/span&gt;
 -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 80 -j ACCEPT
 -A INPUT -d 198.252.206.16/32 -p tcp -m tcp --dport 443 -j ACCEPT
-&lt;span class="c"&gt;# careers.stackexchange.com&lt;/span&gt;
+&lt;span class="c"&gt;# careers.stackoverflow.com&lt;/span&gt;
 -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 80 -j ACCEPT
 -A INPUT -d 198.252.206.17/32 -p tcp -m tcp --dport 443 -j ACCEPT
 &lt;/pre&gt;&lt;/div&gt;

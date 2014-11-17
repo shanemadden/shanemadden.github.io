@@ -126,11 +126,16 @@ And that template..
 
     :::erb
     <% @sets.keys.sort.each do |setname| -%>
+    create <%= setname %>-replacementset <%= @sets[setname]['config'] %>
     create <%= setname %> <%= @sets[setname]['config'] %>
       <%- @sets[setname]['members'].keys.sort.each do |net| -%>
-    add <%= setname %> <%= net %>
+    add <%= setname %>-replacementset <%= net %>
       <%- end -%>
+    swap <%= setname %>-replacementset <%= setname %>
+    destroy <%= setname %>-replacementset
     <% end -%>
+
+(template updated 2014/11/17: a fresh set with a swap in is needed to delete members that are no longer in the hiera data)
 
 ..which gets its data from a Hiera data file like this:
 

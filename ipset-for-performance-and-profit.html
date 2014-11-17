@@ -198,14 +198,18 @@ shanemadden.net            </a>
 
 <p>And that template..</p>
 <div class="highlight"><pre><span class="cp">&lt;%</span> <span class="vi">@sets</span><span class="o">.</span><span class="n">keys</span><span class="o">.</span><span class="n">sort</span><span class="o">.</span><span class="n">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">setname</span><span class="o">|</span> <span class="cp">-%&gt;</span><span class="x"></span>
+<span class="x">create </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x">-replacementset </span><span class="cp">&lt;%=</span> <span class="vi">@sets</span><span class="o">[</span><span class="n">setname</span><span class="o">][</span><span class="s1">&#39;config&#39;</span><span class="o">]</span> <span class="cp">%&gt;</span><span class="x"></span>
 <span class="x">create </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x"> </span><span class="cp">&lt;%=</span> <span class="vi">@sets</span><span class="o">[</span><span class="n">setname</span><span class="o">][</span><span class="s1">&#39;config&#39;</span><span class="o">]</span> <span class="cp">%&gt;</span><span class="x"></span>
 <span class="x">  </span><span class="cp">&lt;%-</span> <span class="vi">@sets</span><span class="o">[</span><span class="n">setname</span><span class="o">][</span><span class="s1">&#39;members&#39;</span><span class="o">].</span><span class="n">keys</span><span class="o">.</span><span class="n">sort</span><span class="o">.</span><span class="n">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">net</span><span class="o">|</span> <span class="cp">-%&gt;</span><span class="x"></span>
-<span class="x">add </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x"> </span><span class="cp">&lt;%=</span> <span class="n">net</span> <span class="cp">%&gt;</span><span class="x"></span>
+<span class="x">add </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x">-replacementset </span><span class="cp">&lt;%=</span> <span class="n">net</span> <span class="cp">%&gt;</span><span class="x"></span>
 <span class="x">  </span><span class="cp">&lt;%-</span> <span class="k">end</span> <span class="cp">-%&gt;</span><span class="x"></span>
+<span class="x">swap </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x">-replacementset </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x"></span>
+<span class="x">destroy </span><span class="cp">&lt;%=</span> <span class="n">setname</span> <span class="cp">%&gt;</span><span class="x">-replacementset</span>
 <span class="cp">&lt;%</span> <span class="k">end</span> <span class="cp">-%&gt;</span><span class="x"></span>
 </pre></div>
 
 
+<p>(template updated 2014/11/17: a fresh set with a swap in is needed to delete members that are no longer in the hiera data)</p>
 <p>..which gets its data from a Hiera data file like this:</p>
 <div class="highlight"><pre><span class="x">&quot;iptables::sets::sets&quot;: {</span>
 <span class="x">  &quot;listeners&quot;: {</span>
